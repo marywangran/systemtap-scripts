@@ -1,0 +1,69 @@
+#!/usr/bin/stap -g
+
+%{
+#include <net/netfilter/nf_conntrack.h>
+%}
+
+global launch
+
+probe begin
+{
+	launch = 1
+}
+
+probe module("nf_nat").function("__nf_nat_alloc_null_binding")
+{
+	if (launch == 1 && $manip == 1) {
+		launch = 0;
+		//system("conntrack -I --protonum 6 --timeout 100 --src 192.168.56.102 --dst 192.168.56.101 --state SYN_SENT --dport 12345 --sport 80");
+		//system("conntrack -I --protonum 6 --timeout 100 --reply-src 192.168.56.102 --reply-dst 192.168.56.101 --state SYN_SENT --reply-port-dst 12345 --reply-port-src 80 --src 1.1.1.1 --dst 192.168.56.102");
+		system("/root/test/other.py");
+		mdelay(50);
+	}
+}
+
+probe module("nf_conntrack").function("nf_conntrack_tuple_taken").return
+{
+	printf("nf_conntrack_tuple_taken   ret:%d\n", $return);
+}
+
+%{
+struct nf_conn *thief = NULL;
+%}
+
+function alertit(stp_ct:long)
+%{
+	struct nf_conn *ct = (struct nf_conn *)STAP_ARG_stp_ct;
+	struct nf_conntrack_tuple *tuple;
+	unsigned short port;
+
+	tuple = &ct->tuplehash[IP_CT_DIR_REPLY].tuple;
+	port = ntohs((unsigned short)tuple->dst.u.all);
+	if (port == 80 && thief == NULL) {
+		STAP_PRINTF("The thief coming!\n");
+		thief = ct;
+	}
+%}
+
+probe module("nf_conntrack").function("nf_conntrack_hash_check_insert")
+{
+	alertit($ct);
+}
+
+function run_away(stp_tuple:long, stp_ct:long)
+%{
+	struct nf_conntrack_tuple *tuple = (struct nf_conntrack_tuple *)STAP_ARG_stp_tuple;
+	struct nf_conn *ct = (struct nf_conn *)STAP_ARG_stp_ct;
+	struct nf_conntrack_tuple *t;
+
+	if (thief) {
+		t = &thief->tuplehash[IP_CT_DIR_REPLY].tuple;
+		thief = NULL;
+		STAP_PRINTF("The thief ran away...\n");
+	}
+%}
+
+probe module("nf_conntrack").function("nf_conntrack_alter_reply")
+{
+	run_away($newreply, $ct);
+}
